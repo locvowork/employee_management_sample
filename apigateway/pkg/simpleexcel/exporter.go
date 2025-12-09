@@ -23,6 +23,9 @@ import (
 const (
 	SectionDirectionHorizontal = "horizontal"
 	SectionDirectionVertical   = "vertical"
+	SectionTypeFull            = "full"   // Normal section with title, header, and data
+	SectionTypeTitleOnly       = "title"  // Only display title
+	SectionTypeHidden          = "hidden" // Hidden section (row will be hidden)
 )
 
 // DataExporter is the main entry point for exporting data.
@@ -49,13 +52,16 @@ type SheetTemplate struct {
 type SectionConfig struct {
 	ID          string         `yaml:"id"`
 	Title       string         `yaml:"title"`
-	Data        interface{}    `yaml:"-"` // Data is bound at runtime
-	Locked      bool           `yaml:"locked"`
+	ColSpan     int            `yaml:"col_span"` // Number of columns to span for title-only sections
+	Data        interface{}    `yaml:"-"`      // Data is bound at runtime
+	Type        string         `yaml:"type"`   // "full", "title", "hidden"
+	Locked      bool           `yaml:"locked"` // Section-level lock (default for all columns)
 	ShowHeader  bool           `yaml:"show_header"`
 	Direction   string         `yaml:"direction"` // "horizontal" or "vertical"
 	Position    string         `yaml:"position"`  // e.g., "A1"
 	TitleStyle  *StyleTemplate `yaml:"title_style"`
 	HeaderStyle *StyleTemplate `yaml:"header_style"`
+	DataStyle   *StyleTemplate `yaml:"data_style"`
 	Columns     []ColumnConfig `yaml:"columns"`
 }
 
@@ -64,6 +70,16 @@ type ColumnConfig struct {
 	FieldName string  `yaml:"field_name"` // Struct field name or map key
 	Header    string  `yaml:"header"`
 	Width     float64 `yaml:"width"`
+	Locked    *bool   `yaml:"locked"` // Column-level lock override (overrides section Locked)
+}
+
+// IsLocked returns whether this column should be locked.
+// If column has explicit Locked setting, use that; otherwise use section default.
+func (c *ColumnConfig) IsLocked(sectionLocked bool) bool {
+	if c.Locked != nil {
+		return *c.Locked
+	}
+	return sectionLocked
 }
 
 // StyleTemplate defines basic styling.
@@ -202,7 +218,7 @@ func (e *DataExporter) StreamTo(w io.Writer) error {
 		}
 
 		// Render sections with streaming
-		if err := e.streamSections(sw, sheetName, sb.sections); err != nil {
+		if err := e.streamSections(f, sw, sheetName, sb.sections); err != nil {
 			return err
 		}
 
@@ -238,7 +254,7 @@ func (e *DataExporter) StreamTo(w io.Writer) error {
 				sections[j] = sec
 			}
 
-			if err := e.streamSections(sw, sheetName, sections); err != nil {
+			if err := e.streamSections(f, sw, sheetName, sections); err != nil {
 				return err
 			}
 
@@ -254,15 +270,53 @@ func (e *DataExporter) StreamTo(w io.Writer) error {
 }
 
 // streamSections renders sections using streaming writer
-func (e *DataExporter) streamSections(sw *excelize.StreamWriter, sheet string, sections []*SectionConfig) error {
+func (e *DataExporter) streamSections(f *excelize.File, sw *excelize.StreamWriter, sheet string, sections []*SectionConfig) error {
 	rowNum := 1
+	hiddenRows := []int{}    // Track rows to hide
+	merges := [][2]string{} // Track cells to merge [start, end]
 
 	for _, sec := range sections {
+		sectionStartRow := rowNum
+
+		// Determine section type
+		sectionType := sec.Type
+		if sectionType == "" {
+			sectionType = SectionTypeFull
+		}
+
+		// Handle title-only section
+		if sectionType == SectionTypeTitleOnly {
+			if sec.Title != "" {
+				style, _ := createStyle(f, sec.TitleStyle)
+				header := []interface{}{sec.Title}
+				cell, _ := excelize.CoordinatesToCellName(1, rowNum)
+				sw.SetRow(cell, header, excelize.RowOpts{StyleID: style})
+
+				// If ColSpan is specified, record the merge to be applied later
+				if sec.ColSpan > 1 {
+					endCell, _ := excelize.CoordinatesToCellName(sec.ColSpan, rowNum)
+					merges = append(merges, [2]string{cell, endCell})
+				}
+
+				rowNum++
+			}
+			// Add spacing
+			rowNum++
+			continue
+		}
+
+		// Handle full and hidden sections
 		if sec.Title != "" {
-			style, _ := createStyle(nil, sec.TitleStyle)
+			style, _ := createStyle(f, sec.TitleStyle)
 			header := []interface{}{sec.Title}
 			cell, _ := excelize.CoordinatesToCellName(1, rowNum)
 			sw.SetRow(cell, header, excelize.RowOpts{StyleID: style})
+
+			// If there are multiple columns, record the merge
+			if len(sec.Columns) > 1 {
+				endCell, _ := excelize.CoordinatesToCellName(len(sec.Columns), rowNum)
+				merges = append(merges, [2]string{cell, endCell})
+			}
 			rowNum++
 		}
 
@@ -302,8 +356,28 @@ func (e *DataExporter) streamSections(sw *excelize.StreamWriter, sheet string, s
 			}
 		}
 
+		// Track hidden rows for hidden sections
+		if sectionType == SectionTypeHidden {
+			for r := sectionStartRow; r < rowNum; r++ {
+				hiddenRows = append(hiddenRows, r)
+			}
+		}
+
 		// Add spacing between sections
 		rowNum++
+	}
+
+	// After streaming is done, apply merges and hide rows
+	if err := sw.Flush(); err != nil {
+		return fmt.Errorf("error flushing before applying styles: %v", err)
+	}
+
+	for _, m := range merges {
+		f.MergeCell(sheet, m[0], m[1])
+	}
+
+	for _, r := range hiddenRows {
+		f.SetRowVisible(sheet, r, false)
 	}
 
 	return nil
@@ -396,7 +470,7 @@ func (e *DataExporter) ToCSV(w io.Writer) error {
 		return fmt.Errorf("failed to get rows: %v", err)
 	}
 
-		// Read and write rows in chunks
+	// Read and write rows in chunks
 	for rows.Next() {
 		row, err := rows.Columns()
 		if err != nil {
@@ -513,11 +587,27 @@ func (e *DataExporter) renderSections(f *excelize.File, sheet string, sections [
 	maxRow := 1            // Next available row for Vertical sections (1-based)
 	nextColHorizontal := 1 // Next available col for Horizontal sections (1-based)
 
-	hasLockedSections := false
+	hasLockedCells := false
+	hiddenRows := []int{} // Track rows to hide
 
 	for _, sec := range sections {
+		// Check if any cell needs locking
 		if sec.Locked {
-			hasLockedSections = true
+			hasLockedCells = true
+		} else {
+			// Check if any column is explicitly locked
+			for _, col := range sec.Columns {
+				if col.Locked != nil && *col.Locked {
+					hasLockedCells = true
+					break
+				}
+			}
+		}
+
+		// Determine section type
+		sectionType := sec.Type
+		if sectionType == "" {
+			sectionType = SectionTypeFull
 		}
 
 		// Determine Layout
@@ -541,29 +631,60 @@ func (e *DataExporter) renderSections(f *excelize.File, sheet string, sections [
 			}
 		}
 
+		// Track section start for hiding
+		sectionStartRow := startRow
+
 		// Keep track of current row for this section
 		currentRow := startRow
 
-		// Helper to get effective style with locking
-		getEffectiveStyle := func(base *StyleTemplate, isHeaderOrTitle bool) *StyleTemplate {
-			s := &StyleTemplate{}
-			if base != nil {
-				*s = *base
+		// Handle title-only section
+		if sectionType == SectionTypeTitleOnly {
+			if sec.Title != "" {
+				cell, _ := excelize.CoordinatesToCellName(startCol, currentRow)
+				f.SetCellValue(sheet, cell, sec.Title)
+
+				styleID, _ := createStyle(f, sec.TitleStyle)
+
+				// Determine how many columns to merge for the title
+				colSpan := sec.ColSpan
+				if colSpan <= 1 && len(sec.Columns) > 1 {
+					colSpan = len(sec.Columns)
+				}
+
+				if colSpan > 1 {
+					endCell, _ := excelize.CoordinatesToCellName(startCol+colSpan-1, currentRow)
+					f.MergeCell(sheet, cell, endCell)
+					f.SetCellStyle(sheet, cell, endCell, styleID)
+				} else {
+					f.SetCellStyle(sheet, cell, cell, styleID)
+				}
+
+				currentRow++
 			}
 
-			// If section is locked, ensure Locked=true
-			// If section is unlocked, ensure Locked=false (so it's editable when sheet is protected)
-			locked := sec.Locked
-			s.Locked = &locked
-			return s
+			// Update trackers and continue
+			if currentRow > maxRow {
+				maxRow = currentRow
+			}
+
+			// Adjust next column based on what was actually spanned
+			colSpan := sec.ColSpan
+			if colSpan <= 1 && len(sec.Columns) > 1 {
+				colSpan = len(sec.Columns)
+			}
+			if colSpan <= 1 {
+				colSpan = 1 // at least one column
+			}
+			nextColHorizontal = startCol + colSpan
+			continue
 		}
 
-		// Render Title
+		// Render Title for full/hidden sections
 		if sec.Title != "" {
 			cell, _ := excelize.CoordinatesToCellName(startCol, currentRow)
 			f.SetCellValue(sheet, cell, sec.Title)
 
-			style := getEffectiveStyle(sec.TitleStyle, true)
+			style := getEffectiveStyle(sec.TitleStyle, sec.Locked, true)
 			styleID, _ := createStyle(f, style)
 
 			// Merge title across columns if there are multiple columns
@@ -584,7 +705,9 @@ func (e *DataExporter) renderSections(f *excelize.File, sheet string, sections [
 				cell, _ := excelize.CoordinatesToCellName(startCol+i, currentRow)
 				f.SetCellValue(sheet, cell, col.Header)
 
-				style := getEffectiveStyle(sec.HeaderStyle, true)
+				// Header uses column-specific locking
+				locked := col.IsLocked(sec.Locked)
+				style := getEffectiveStyle(sec.HeaderStyle, locked, true)
 				styleID, _ := createStyle(f, style)
 				f.SetCellStyle(sheet, cell, cell, styleID)
 
@@ -606,14 +729,20 @@ func (e *DataExporter) renderSections(f *excelize.File, sheet string, sections [
 					cell, _ := excelize.CoordinatesToCellName(startCol+j, currentRow)
 					f.SetCellValue(sheet, cell, val)
 
-					// Apply data style (default to unlocked if section is unlocked)
-					// Note: We don't have explicit DataStyle in simplified version yet,
-					// but we should at least apply locking.
-					style := getEffectiveStyle(nil, false)
+					// Apply column-specific locking for data cells
+					locked := col.IsLocked(sec.Locked)
+					style := getEffectiveStyle(sec.DataStyle, locked, false)
 					styleID, _ := createStyle(f, style)
 					f.SetCellStyle(sheet, cell, cell, styleID)
 				}
 				currentRow++
+			}
+		}
+
+		// Track hidden rows for hidden sections
+		if sectionType == SectionTypeHidden {
+			for r := sectionStartRow; r < currentRow; r++ {
+				hiddenRows = append(hiddenRows, r)
 			}
 		}
 
@@ -626,15 +755,13 @@ func (e *DataExporter) renderSections(f *excelize.File, sheet string, sections [
 		nextColHorizontal = startCol + len(sec.Columns)
 	}
 
-	// Protect sheet if any section is locked (or if we have mixed locked/unlocked)
-	// Actually, if we have ANY unlocked sections, we must protect the sheet
-	// so that the Locked=false cells work (otherwise everything is editable).
-	// But if EVERYTHING is unlocked, maybe we don't protect?
-	// Safest is to protect if we have at least one locked section, OR if we want to enforce the "Locked=false" on others.
-	// In Excel, "Locked=false" only means "Editable when sheet is protected".
-	// If sheet is NOT protected, "Locked=true" cells are ALSO editable.
-	// So to support "Locked=true", we MUST protect the sheet.
-	if hasLockedSections {
+	// Hide rows for hidden sections
+	for _, r := range hiddenRows {
+		f.SetRowVisible(sheet, r, false)
+	}
+
+	// Protect sheet if any cell needs locking
+	if hasLockedCells {
 		f.ProtectSheet(sheet, &excelize.SheetProtectionOptions{
 			Password:            "",
 			FormatCells:         false,
@@ -656,6 +783,17 @@ func (e *DataExporter) renderSections(f *excelize.File, sheet string, sections [
 	return nil
 }
 
+// getEffectiveStyle returns a style with the appropriate lock setting.
+// locked parameter determines if this cell should be locked.
+func getEffectiveStyle(base *StyleTemplate, locked bool, isHeaderOrTitle bool) *StyleTemplate {
+	s := &StyleTemplate{}
+	if base != nil {
+		*s = *base
+	}
+	s.Locked = &locked
+	return s
+}
+
 func extractValue(item reflect.Value, fieldName string) interface{} {
 	if item.Kind() == reflect.Struct {
 		f := item.FieldByName(fieldName)
@@ -663,11 +801,15 @@ func extractValue(item reflect.Value, fieldName string) interface{} {
 			return f.Interface()
 		}
 	}
-	// Handle maps if needed, but struct is primary use case in main.go
+	// Handle maps if needed, but struct is primary use case
 	return ""
 }
 
 func createStyle(f *excelize.File, tmpl *StyleTemplate) (int, error) {
+	if tmpl == nil {
+		return 0, nil
+	}
+
 	style := &excelize.Style{}
 	if tmpl.Font != nil {
 		style.Font = &excelize.Font{
