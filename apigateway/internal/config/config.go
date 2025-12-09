@@ -23,12 +23,13 @@ type envConfig struct {
 	DB_MAX_OPEN_CONNS    int
 	// logger config
 	LOG_FILE_PATH string
+	// app config
+	APP_PORT string
 }
 
 func LoadEnvConfig() error {
-	if err := godotenv.Load(); err != nil {
-		return err
-	}
+	// Load .env file if it exists, but don't fail if it doesn't
+	_ = godotenv.Load()
 
 	DefaultEnvConfig = &envConfig{
 		DB_HOST:              getEnvString("DB_HOST", "localhost"),
@@ -41,6 +42,7 @@ func LoadEnvConfig() error {
 		DB_MAX_IDLE_CONNS:    getEnvInt("DB_MAX_IDLE_CONNS", 10),
 		DB_MAX_OPEN_CONNS:    getEnvInt("DB_MAX_OPEN_CONNS", 100),
 		LOG_FILE_PATH:        getEnvString("LOG_FILE_PATH", ""),
+		APP_PORT:             getEnvString("APP_PORT", "8080"),
 	}
 	return nil
 }

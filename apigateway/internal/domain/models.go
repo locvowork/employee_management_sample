@@ -49,3 +49,12 @@ type Title struct {
 	FromDate time.Time `json:"from_date" db:"from_date"`
 	ToDate   time.Time `json:"to_date" db:"to_date"`
 }
+
+// EmployeeReport represents the aggregated employee data for reporting
+type EmployeeReport struct {
+	Employee          Employee      `json:"employee"`
+	CurrentSalary     Salary        `json:"current_salary"`
+	CurrentTitle      Title         `json:"current_title"`
+	DepartmentHistory []DeptEmp     `json:"department_history"`
+	ManagementHistory []DeptManager `json:"management_history"`
+}

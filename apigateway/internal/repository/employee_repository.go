@@ -179,3 +179,18 @@ func (r *employeeRepository) GetManagers(ctx context.Context, deptNo string) ([]
 	}
 	return managers, nil
 }
+
+func (r *employeeRepository) GetTitle(ctx context.Context, empID int) (*domain.Title, error) {
+	b := builder.NewSQLBuilder()
+	query, args := b.Select("emp_no", "title", "from_date", "to_date").
+		From("employees.titles").
+		Where("emp_no = ? AND to_date = ?", empID, "9999-01-01").
+		Build()
+
+	row := r.db.QueryRowContext(ctx, query, args...)
+	var t domain.Title
+	if err := row.Scan(&t.EmpNo, &t.Title, &t.FromDate, &t.ToDate); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}

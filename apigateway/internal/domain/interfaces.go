@@ -21,4 +21,5 @@ type EmployeeRepository interface {
 	GetCurrentSalary(ctx context.Context, empID int) (*Salary, error)
 	GetDepartmentHistory(ctx context.Context, empID int) ([]DeptEmp, error)
 	GetManagers(ctx context.Context, deptNo string) ([]DeptManager, error)
+	GetTitle(ctx context.Context, empID int) (*Title, error)
 }

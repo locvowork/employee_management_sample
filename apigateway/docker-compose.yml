@@ -1,0 +1,28 @@
+version: "3.8"
+
+# Use environment variables from .env file if it exists
+# You can override the environment by setting APP_ENV before running docker-compose
+# Example: APP_ENV=staging docker-compose up
+
+services:
+  app:
+    build: .
+    ports:
+      - "${APP_PORT:-8090}:${APP_PORT:-8090}"
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - APP_PORT=${APP_PORT:-8090}
+      # These will be overridden by the entrypoint script from the .env file
+      - DB_HOST=${DB_HOST:-host.docker.internal}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-postgres}
+      - DB_NAME=${DB_NAME:-postgres}
+      - DB_SSL_MODE=${DB_SSL_MODE:-disable}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    # For development, you can mount the .env file as a volume
+    # Uncomment the following lines for development:
+    # volumes:
+    #   - ./.env.${APP_ENV:-development}:/app/.env.${APP_ENV:-development}:ro
