@@ -91,6 +91,7 @@ func (a *App) RegisterRoutes(empHandler *handler.EmployeeHandler) {
 	exportGroup.GET("/complex", empHandler.ExportComplexHandler)
 	exportGroup.GET("/yaml", empHandler.ExportFromYAMLHandler)
 	exportGroup.GET("/locked", empHandler.ExportWithLockingHandler)
+	exportGroup.GET("/dynamic", empHandler.ExportDynamicHandler) // New route
 }
 
 func (a *App) Run() error {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/locvowork/employee_management_sample/apigateway/internal/domain"
+	"github.com/locvowork/employee_management_sample/apigateway/internal/logger"
 	"github.com/locvowork/employee_management_sample/apigateway/internal/service"
 	"github.com/locvowork/employee_management_sample/apigateway/internal/service/serviceutils"
 	"github.com/locvowork/employee_management_sample/apigateway/pkg/simpleexcel"
@@ -118,6 +119,7 @@ type Product struct {
 	Price     float64
 	Category  string
 	Available bool
+	MetaData  map[string]interface{}
 }
 
 type Sale struct {
@@ -128,10 +130,10 @@ type Sale struct {
 }
 
 var sampleProducts = []Product{
-	{"Laptop", 1200.50, "Electronics", true},
-	{"Mouse", 25.00, "Electronics", true},
-	{"Book", 15.99, "Stationery", true},
-	{"Desk Chair", 150.80, "Furniture", false},
+	{"Laptop", 1200.50, "Electronics", true, map[string]interface{}{"Feature01": "16GB RAM", "Feature02": "512GB SSD"}},
+	{"Mouse", 25.00, "Electronics", true, map[string]interface{}{"Feature01": "Wireless", "Feature03": "RGB"}},
+	{"Book", 15.99, "Stationery", true, nil},
+	{"Desk Chair", 150.80, "Furniture", false, map[string]interface{}{"Feature02": "Ergonomic"}},
 }
 
 var sampleSales = []Sale{
@@ -306,4 +308,47 @@ func (h *EmployeeHandler) ExportWithLockingHandler(c echo.Context) error {
 		})
 
 	return exporter.StreamToResponse(c.Response().Writer, "locked_report.xlsx")
+}
+
+func (h *EmployeeHandler) ExportDynamicHandler(c echo.Context) error {
+	// Original Column Configs
+	// We set MetaData to be locked.
+	locked := true
+	cols := []simpleexcel.ColumnConfig{
+		{FieldName: "Name", Header: "Product Name", Width: 20},
+		{FieldName: "Price", Header: "Price", Width: 10},
+		{FieldName: "Category", Header: "Category", Width: 15},
+		{FieldName: "Available", Header: "In Stock", Width: 10},
+		{
+			FieldName: "MetaData",
+			Header:    "Meta Data",
+			Width:     15,
+			Locked:    &locked, // This config should be inherited by dynamic fields
+		},
+	}
+
+	// Convert Data
+	dynamicData, newFields, err := simpleexcel.ConvertStructsToDynamic(sampleProducts, "MetaData")
+	if err != nil {
+		return serviceutils.ResponseError(c, http.StatusInternalServerError, "Failed to convert dynamic data", err)
+	}
+	logger.InfoLog(c.Request().Context(), "Dynamic Data: %+v", dynamicData)
+	// Expand Columns
+	// This will replace "MetaData" column with "Feature01", "Feature02", etc.
+	// inheriting Locked=true and Width=15.
+	finalCols := simpleexcel.ExpandColumnConfigs(cols, "MetaData", newFields)
+
+	exporter := simpleexcel.NewDataExporter()
+	exporter.AddSheet("Dynamic Products").
+		AddSection(&simpleexcel.SectionConfig{
+			Title:      "Dynamic Product Catalog",
+			ShowHeader: true,
+			Data:       dynamicData,
+			Columns:    finalCols,
+			TitleStyle: &simpleexcel.StyleTemplate{
+				Font: &simpleexcel.FontTemplate{Bold: true},
+			},
+		})
+
+	return exporter.StreamToResponse(c.Response().Writer, "dynamic_products.xlsx")
 }
