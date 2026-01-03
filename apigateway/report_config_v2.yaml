@@ -6,7 +6,7 @@ sheets:
   - name: "Executive Report"
     sections:
     - id: "product_section_editable"
-      title: "Product Section Editable"
+      title: ""
       type: "full"
       show_header: true
       locked: true
@@ -18,9 +18,12 @@ sheets:
           color: "#FFFFFF"
         fill:
           color: "#4F81BD"
+        alignment:
+          horizontal: "left"
+          vertical: "top"
       title_height: 40
       header_height: 30
-      data_height: 25
+      data_height: 150      
       header_style:
         font:
           bold: true
@@ -62,7 +65,7 @@ sheets:
           locked: false
           hidden_field_name: "db_color"
     - id: "product_section_original"
-      title: "Product Section Original"
+      title: "" # Display an empty row for spacing
       type: "full"
       show_header: true
       locked: true
@@ -73,6 +76,9 @@ sheets:
           color: "#FFFFFF"
         fill:
           color: "#9BBB59"
+        alignment:
+          horizontal: "left"
+          vertical: "top"
       header_style:
         font:
           bold: true
@@ -104,7 +110,7 @@ sheets:
           header: "Color"
           width: 10
     - id: "product_comparison_section"
-      title: "Product Change Detect"
+      title: ""
       type: "full"
       show_header: true
       locked: true
@@ -116,6 +122,9 @@ sheets:
           color: "#FFFFFF"
         fill:
           color: "#000000"
+        alignment:
+          horizontal: "left"
+          vertical: "top"
       header_style:
         font:
           bold: true

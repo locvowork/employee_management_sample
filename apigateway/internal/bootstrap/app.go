@@ -62,12 +62,13 @@ func (a *App) Initialize(ctx context.Context) error {
 	empRepo := repository.NewEmployeeRepository(db)
 	empSvc := service.NewEmployeeService(empRepo)
 	empHandler := handler.NewEmployeeHandler(empSvc)
+	compHandler := handler.NewComparisonHandler()
 
 	// Register Middlewares
 	a.RegisterMiddlewares()
 
 	// Register Routes
-	a.RegisterRoutes(empHandler)
+	a.RegisterRoutes(empHandler, compHandler)
 
 	return nil
 }
@@ -78,7 +79,7 @@ func (a *App) RegisterMiddlewares() {
 	a.Echo.Use(middleware.CORS())
 }
 
-func (a *App) RegisterRoutes(empHandler *handler.EmployeeHandler) {
+func (a *App) RegisterRoutes(empHandler *handler.EmployeeHandler, compHandler *handler.ComparisonHandler) {
 	a.Echo.POST("/employees", empHandler.CreateHandler)
 	a.Echo.GET("/employees/:id", empHandler.GetHandler)
 	a.Echo.PUT("/employees/:id", empHandler.UpdateHandler)
@@ -93,6 +94,12 @@ func (a *App) RegisterRoutes(empHandler *handler.EmployeeHandler) {
 	exportGroupV2 := a.Echo.Group("/export/v2")
 	exportGroupV2.GET("/fluent", empHandler.ExportFluentConfigHandler)
 	exportGroupV2.GET("/yaml", empHandler.ExportV2FromYAMLHandler)
+	exportGroupV2.GET("/largedata", empHandler.ExportLargeDataHandler)
+
+	compGroup := a.Echo.Group("/comparison")
+	compGroup.GET("/wiki/tpl", compHandler.ExportWikiTPL)
+	compGroup.GET("/wiki/idiomatic", compHandler.ExportWikiIdiomatic)
+	compGroup.GET("/wiki/stream", compHandler.ExportWikiStreaming)
 }
 
 func (a *App) Run() error {

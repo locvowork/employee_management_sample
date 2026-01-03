@@ -1,5 +1,9 @@
 package pipeline
 
+import (
+	"sync"
+)
+
 // Link connects two blocks together with an optional filter function
 func Link(source interface{}, target *Target, filter func(interface{}) bool) {
 	switch s := source.(type) {
@@ -8,8 +12,6 @@ func Link(source interface{}, target *Target, filter func(interface{}) bool) {
 	case *TransformBlock:
 		s.LinkTo(target, filter)
 	case *ActionBlock:
-		s.LinkTo(target, filter)
-	case *RetryBlock:
 		s.LinkTo(target, filter)
 	}
 }
@@ -26,9 +28,6 @@ func LinkTo(source interface{}, dest interface{}, filter func(interface{}) bool)
 	case *ActionBlock:
 		target := NewTarget(d.input)
 		Link(source, target, filter)
-	case *RetryBlock:
-		target := NewTarget(d.input)
-		Link(source, target, filter)
 	}
 }
 
@@ -43,8 +42,6 @@ func CompleteAll(blocks ...interface{}) {
 		case *TransformBlock:
 			block.Complete()
 		case *ActionBlock:
-			block.Complete()
-		case *RetryBlock:
 			block.Complete()
 		}
 	}
@@ -73,10 +70,6 @@ func WaitAll(blocks ...interface{}) error {
 					errCh <- err
 				}
 			case *ActionBlock:
-				if err := b.Wait(); err != nil {
-					errCh <- err
-				}
-			case *RetryBlock:
 				if err := b.Wait(); err != nil {
 					errCh <- err
 				}

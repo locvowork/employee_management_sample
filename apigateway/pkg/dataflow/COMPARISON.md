@@ -4,6 +4,28 @@ This document compares two approaches to dataflow pipelines available in this pr
 1.  **TPL-Style** (`pkg/pipeline`): Uses struct-based Blocks and explicit Linking, mimicking .NET's TPL Dataflow.
 2.  **Idiomatic Go** (`pkg/dataflow`): Uses functional primitives, Channels, and Options.
 
+## Practical Implementation Insights
+
+During the implementation of the Wikipedia crawler, several key differences surfaced:
+
+### 1. Completion Propagation
+- **TPL-style (`pkg/pipeline`)**: Required manual fixing to support automatic completion propagation across blocks. Initial implementation would hang on `WaitAll` if intermediate blocks were not manually completed. Refactored to close target channels in a `defer` block within the processing loop.
+- **Idiomatic Go (`pkg/dataflow`)**: Uses `context.Context` and channel closing naturally. Completion propagates as channels are closed by the `Map`/`Filter` stages.
+
+### 2. Error Handling & Panics
+- **TPL-style**: Highly susceptible to "send on closed channel" or "close of closed channel" panics if the lifecycle is not perfectly managed (e.g., source closing target while target is trying to complete).
+- **Idiomatic Go**: More robust due to standard Go concurrency patterns. Errors are first-class citizens in the `Map`/`ForEach` functions.
+
+### 3. Parallelism
+- **TPL-style**: Parallelism is achieved by creating multiple blocks of the same type or manually managing goroutines inside a block.
+- **Idiomatic Go**: Uses `WithWorkers(n)` functional option, which is significantly cleaner and easier to reason about.
+
+## Conclusion
+
+The **Idiomatic Go** (`pkg/dataflow`) approach is recommended for most Go projects. it leverages the language's strengths (channels, contexts, functional options) and provides a much safer and more readable API.
+
+The **TPL-style** (`pkg/pipeline`) approach is useful if you are porting logic from .NET or have a legacy requirement for explicit object-oriented block management, but it requires much more "boilerplate" and careful lifecycle management to avoid deadlocks and panics.
+
 ## 1. Philosophy & Design
 
 | Feature | TPL-Style (`pkg/pipeline`) | Idiomatic Go (`pkg/dataflow`) |

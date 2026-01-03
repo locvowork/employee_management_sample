@@ -38,6 +38,17 @@ type ExcelDataExporter struct {
 
 	// Metadata for coordinate mapping
 	sectionMetadata map[string]SectionPlacement
+
+	// Performance Caches
+	styleCache   map[string]int
+	colNameCache map[int]string
+	fieldCache   map[fieldCacheKey]int
+}
+
+// fieldCacheKey is a unique key for caching field indices.
+type fieldCacheKey struct {
+	Type      reflect.Type
+	FieldName string
 }
 
 // SectionPlacement stores the starting coordinates and metadata of a rendered section.
@@ -63,7 +74,7 @@ type SheetTemplate struct {
 // SectionConfig defines a section of data in a sheet.
 type SectionConfig struct {
 	ID             string         `yaml:"id"`
-	Title          string         `yaml:"title"`
+	Title          interface{}    `yaml:"title"`
 	ColSpan        int            `yaml:"col_span"`        // Number of columns to span for title-only sections
 	Data           interface{}    `yaml:"-"`               // Data is bound at runtime
 	SourceSections []string       `yaml:"source_sections"` // IDs of sections this depends on
@@ -143,6 +154,9 @@ func NewExcelDataExporter() *ExcelDataExporter {
 		sheets:          []*SheetBuilder{},
 		formatters:      make(map[string]func(interface{}) interface{}),
 		sectionMetadata: make(map[string]SectionPlacement),
+		styleCache:      make(map[string]int),
+		colNameCache:    make(map[int]string),
+		fieldCache:      make(map[fieldCacheKey]int),
 	}
 }
 
@@ -161,6 +175,9 @@ func NewExcelDataExporterFromYamlConfig(yamlConfig string) (*ExcelDataExporter, 
 		formatters:      make(map[string]func(interface{}) interface{}),
 		sheets:          make([]*SheetBuilder, 0),
 		sectionMetadata: make(map[string]SectionPlacement),
+		styleCache:      make(map[string]int),
+		colNameCache:    make(map[int]string),
+		fieldCache:      make(map[fieldCacheKey]int),
 	}
 
 	// Initialize sheets from template
@@ -328,8 +345,8 @@ func (e *ExcelDataExporter) ToCSV(w io.Writer) error {
 		cols := mergeColumns(sec.Data, sec.Columns)
 
 		// Title (if single title only)
-		if sec.Title != "" {
-			_ = csvWriter.Write([]string{sec.Title})
+		if sec.Title != nil {
+			_ = csvWriter.Write([]string{fmt.Sprintf("%v", sec.Title)})
 		}
 
 		// Header
@@ -354,7 +371,7 @@ func (e *ExcelDataExporter) ToCSV(w io.Writer) error {
 				item := v.Index(i)
 				rowArr := make([]string, len(cols))
 				for j, col := range cols {
-					val := extractValue(item, col.FieldName)
+					val := e.extractValue(item, col.FieldName)
 					// Apply formatter if any
 					if col.Formatter != nil {
 						val = col.Formatter(val)
@@ -464,7 +481,7 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 		// Calculate data start row by skipping Title, Hidden Row, and Header
 		dataStartRow := sRow
 		if sectionType != SectionTypeTitleOnly {
-			if sec.Title != "" {
+			if sec.Title != nil {
 				dataStartRow++
 			}
 			if hasHiddenFields(sec) {
@@ -474,7 +491,7 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 				dataStartRow++
 			}
 		} else {
-			if sec.Title != "" {
+			if sec.Title != nil {
 				dataStartRow++
 			}
 		}
@@ -545,7 +562,7 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 	if hasLockedCells {
 		unlocked := false
 		defaultStyle := &StyleTemplate{Locked: &unlocked}
-		styleID, _ := createStyle(f, defaultStyle)
+		styleID, _ := e.createStyle(f, defaultStyle)
 		f.SetColStyle(sheet, "A:XFD", styleID)
 	}
 
@@ -563,15 +580,15 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 
 		// Handle Title Only
 		if sectionType == SectionTypeTitleOnly {
-			if sec.Title != "" {
-				cell, _ := excelize.CoordinatesToCellName(sCol, currentRow)
+			if sec.Title != nil {
+				cell := e.getCellAddress(sCol, currentRow)
 				f.SetCellValue(sheet, cell, sec.Title)
 				defaultTitleOnly := &StyleTemplate{
 					Font:      &FontTemplate{Bold: true},
 					Alignment: &AlignmentTemplate{Horizontal: "center", Vertical: "top"},
 				}
 				style := resolveStyle(sec.TitleStyle, defaultTitleOnly, sec.Locked)
-				styleID, _ := createStyle(f, style)
+				styleID, _ := e.createStyle(f, style)
 				colSpan := sec.ColSpan
 				if colSpan <= 1 && len(sec.Columns) > 1 {
 					colSpan = len(sec.Columns)
@@ -603,17 +620,17 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 		}
 
 		// Render Title
-		if sec.Title != "" {
-			cell, _ := excelize.CoordinatesToCellName(sCol, currentRow)
+		if sec.Title != nil {
+			cell := e.getCellAddress(sCol, currentRow)
 			f.SetCellValue(sheet, cell, sec.Title)
 			defaultTitle := &StyleTemplate{
 				Font:      &FontTemplate{Bold: true},
 				Alignment: &AlignmentTemplate{Horizontal: "center", Vertical: "top"},
 			}
 			style := resolveStyle(sec.TitleStyle, defaultTitle, sec.Locked)
-			styleID, _ := createStyle(f, style)
+			styleID, _ := e.createStyle(f, style)
 			if len(sec.Columns) > 1 {
-				endCell, _ := excelize.CoordinatesToCellName(sCol+len(sec.Columns)-1, currentRow)
+				endCell := e.getCellAddress(sCol+len(sec.Columns)-1, currentRow)
 				f.MergeCell(sheet, cell, endCell)
 				f.SetCellStyle(sheet, cell, endCell, styleID)
 			} else {
@@ -629,9 +646,9 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 		if hasHiddenFields(sec) {
 			locked := true
 			hiddenStyle := &StyleTemplate{Fill: &FillTemplate{Color: "FFFF00"}, Locked: &locked}
-			styleID, _ := createStyle(f, hiddenStyle)
+			styleID, _ := e.createStyle(f, hiddenStyle)
 			for i, col := range sec.Columns {
-				cell, _ := excelize.CoordinatesToCellName(sCol+i, currentRow)
+				cell := e.getCellAddress(sCol+i, currentRow)
 				f.SetCellValue(sheet, cell, col.HiddenFieldName)
 				f.SetCellStyle(sheet, cell, cell, styleID)
 			}
@@ -642,7 +659,7 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 		// Render Header
 		if sec.ShowHeader {
 			for i, col := range sec.Columns {
-				cell, _ := excelize.CoordinatesToCellName(sCol+i, currentRow)
+				cell := e.getCellAddress(sCol+i, currentRow)
 				f.SetCellValue(sheet, cell, col.Header)
 				locked := col.IsLocked(sec.Locked)
 				defaultHeader := &StyleTemplate{
@@ -650,10 +667,10 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 					Alignment: &AlignmentTemplate{Horizontal: "center", Vertical: "top"},
 				}
 				style := resolveStyle(sec.HeaderStyle, defaultHeader, locked)
-				styleID, _ := createStyle(f, style)
+				styleID, _ := e.createStyle(f, style)
 				f.SetCellStyle(sheet, cell, cell, styleID)
 				if col.Width > 0 {
-					colName, _ := excelize.ColumnNumberToName(sCol + i)
+					colName := e.getColName(sCol + i)
 					f.SetColWidth(sheet, colName, colName, col.Width)
 				}
 			}
@@ -661,6 +678,25 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 				f.SetRowHeight(sheet, currentRow, sec.HeaderHeight)
 			}
 			currentRow++
+		}
+
+		// Pre-calculate style IDs and common values for data rendering
+		dataStyleIDs := make([]int, len(sec.Columns))
+		maxColHeight := sec.DataHeight
+
+		for j, col := range sec.Columns {
+			locked := col.IsLocked(sec.Locked)
+			var defaultDataStyle *StyleTemplate
+			if sectionType == SectionTypeHidden {
+				defaultDataStyle = &StyleTemplate{Fill: &FillTemplate{Color: "FFFF00"}}
+			}
+			style := resolveStyle(sec.DataStyle, defaultDataStyle, locked)
+			styleID, _ := e.createStyle(f, style)
+			dataStyleIDs[j] = styleID
+
+			if col.Height > maxColHeight {
+				maxColHeight = col.Height
+			}
 		}
 
 		// Render Data
@@ -672,7 +708,7 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 				item = dataVal.Index(i)
 			}
 			for j, col := range sec.Columns {
-				cell, _ := excelize.CoordinatesToCellName(sCol+j, currentRow)
+				cell := e.getCellAddress(sCol+j, currentRow)
 				if col.CompareWith != nil {
 					formula, err := e.generateDiffFormula(col, i)
 					if err == nil {
@@ -681,7 +717,7 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 						f.SetCellValue(sheet, cell, fmt.Sprintf("Error: %v", err))
 					}
 				} else if item.IsValid() {
-					val := extractValue(item, col.FieldName)
+					val := e.extractValue(item, col.FieldName)
 					if col.Formatter != nil {
 						val = col.Formatter(val)
 					} else if col.FormatterName != "" {
@@ -691,25 +727,10 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 					}
 					f.SetCellValue(sheet, cell, val)
 				}
-
-				locked := col.IsLocked(sec.Locked)
-				var defaultDataStyle *StyleTemplate
-				if sectionType == SectionTypeHidden {
-					defaultDataStyle = &StyleTemplate{Fill: &FillTemplate{Color: "FFFF00"}}
-				}
-				style := resolveStyle(sec.DataStyle, defaultDataStyle, locked)
-				styleID, _ := createStyle(f, style)
-				f.SetCellStyle(sheet, cell, cell, styleID)
+				f.SetCellStyle(sheet, cell, cell, dataStyleIDs[j])
 			}
-			// Apply data row height
-			rowHeight := sec.DataHeight
-			for _, col := range sec.Columns {
-				if col.Height > rowHeight {
-					rowHeight = col.Height
-				}
-			}
-			if rowHeight > 0 {
-				f.SetRowHeight(sheet, currentRow, rowHeight)
+			if maxColHeight > 0 {
+				f.SetRowHeight(sheet, currentRow, maxColHeight)
 			}
 			currentRow++
 		}
@@ -717,7 +738,7 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 		// Apply AutoFilter if requested
 		if sec.HasFilter && sec.ShowHeader && len(sec.Columns) > 0 {
 			headerRow := sRow
-			if sec.Title != "" {
+			if sec.Title != nil {
 				headerRow++
 			}
 			if hasHiddenFields(sec) {
@@ -725,8 +746,8 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 			}
 			// headerRow is now the row index of the header
 
-			firstCell, _ := excelize.CoordinatesToCellName(sCol, headerRow)
-			lastCell, _ := excelize.CoordinatesToCellName(sCol+len(sec.Columns)-1, currentRow-1)
+			firstCell := e.getCellAddress(sCol, headerRow)
+			lastCell := e.getCellAddress(sCol+len(sec.Columns)-1, currentRow-1)
 			filterRange := fmt.Sprintf("%s:%s", firstCell, lastCell)
 			f.AutoFilter(sheet, filterRange, nil)
 		}
@@ -765,7 +786,6 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 			SelectUnlockedCells: true,
 		})
 	}
-
 	return nil
 }
 
@@ -851,24 +871,45 @@ func resolveStyle(base *StyleTemplate, defaultStyle *StyleTemplate, locked bool)
 	return s
 }
 
-func extractValue(item reflect.Value, fieldName string) interface{} {
-	if item.Kind() == reflect.Struct {
-		f := item.FieldByName(fieldName)
-		if f.IsValid() {
-			return f.Interface()
-		}
-	} else if item.Kind() == reflect.Map {
-		val := item.MapIndex(reflect.ValueOf(fieldName))
-		if val.IsValid() {
-			return val.Interface()
-		}
+// getColName returns the column name for a given column number, with caching.
+func (e *ExcelDataExporter) getColName(col int) string {
+	if name, ok := e.colNameCache[col]; ok {
+		return name
 	}
-	return ""
+	name, _ := excelize.ColumnNumberToName(col)
+	e.colNameCache[col] = name
+	return name
 }
 
-func createStyle(f *excelize.File, tmpl *StyleTemplate) (int, error) {
+// getCellAddress returns the cell address for given coordinates, with caching.
+func (e *ExcelDataExporter) getCellAddress(col, row int) string {
+	colName := e.getColName(col)
+	return fmt.Sprintf("%s%d", colName, row)
+}
+
+func (e *ExcelDataExporter) createStyle(f *excelize.File, tmpl *StyleTemplate) (int, error) {
 	if tmpl == nil {
 		return 0, nil
+	}
+
+	// Generate a unique key for this style
+	var sb strings.Builder
+	if tmpl.Font != nil {
+		fmt.Fprintf(&sb, "f:%v:%s|", tmpl.Font.Bold, tmpl.Font.Color)
+	}
+	if tmpl.Fill != nil {
+		fmt.Fprintf(&sb, "i:%s|", tmpl.Fill.Color)
+	}
+	if tmpl.Alignment != nil {
+		fmt.Fprintf(&sb, "a:%s:%s|", tmpl.Alignment.Horizontal, tmpl.Alignment.Vertical)
+	}
+	if tmpl.Locked != nil {
+		fmt.Fprintf(&sb, "l:%v|", *tmpl.Locked)
+	}
+	key := sb.String()
+
+	if id, ok := e.styleCache[key]; ok {
+		return id, nil
 	}
 
 	style := &excelize.Style{}
@@ -896,7 +937,39 @@ func createStyle(f *excelize.File, tmpl *StyleTemplate) (int, error) {
 			Locked: *tmpl.Locked,
 		}
 	}
-	return f.NewStyle(style)
+	id, err := f.NewStyle(style)
+	if err == nil {
+		e.styleCache[key] = id
+	}
+	return id, err
+}
+
+func (e *ExcelDataExporter) extractValue(item reflect.Value, fieldName string) interface{} {
+	if item.Kind() == reflect.Struct {
+		t := item.Type()
+		key := fieldCacheKey{Type: t, FieldName: fieldName}
+		index, ok := e.fieldCache[key]
+		if !ok {
+			f, found := t.FieldByName(fieldName)
+			if found {
+				index = f.Index[0]
+				e.fieldCache[key] = index
+			} else {
+				e.fieldCache[key] = -1 // Not found
+				return ""
+			}
+		}
+
+		if index != -1 {
+			return item.Field(index).Interface()
+		}
+	} else if item.Kind() == reflect.Map {
+		val := item.MapIndex(reflect.ValueOf(fieldName))
+		if val.IsValid() {
+			return val.Interface()
+		}
+	}
+	return ""
 }
 
 // mergeColumns merges user-defined columns with detected fields from data.

@@ -41,8 +41,15 @@ func (b *BaseBlock) Context() context.Context {
 	return b.ctx
 }
 
-// Complete marks the block as completed
+// Complete marks the block as completed. Derived blocks should override this
+// to close their input channels and signal completion after processing.
 func (b *BaseBlock) Complete() {
+	b.SignalCompletion()
+}
+
+// SignalCompletion marks the block as finished and closes the completion channel.
+// This should be called when all processing is done.
+func (b *BaseBlock) SignalCompletion() {
 	b.completionOnce.Do(func() {
 		close(b.completion)
 		for _, h := range b.onCompletion {
@@ -53,12 +60,15 @@ func (b *BaseBlock) Complete() {
 
 // Fault sets the error state and cancels the context
 func (b *BaseBlock) Fault(err error) {
-	b.Complete()
-	b.ctx.Done()
-
 	b.errMutex.Lock()
 	b.err = err
 	b.errMutex.Unlock()
+
+	if b.cancel != nil {
+		b.cancel()
+	}
+
+	b.SignalCompletion()
 
 	b.onFaultOnce.Do(func() {
 		for _, h := range b.onFault {

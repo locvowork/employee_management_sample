@@ -2,9 +2,11 @@ package handler
 
 import (
 	"fmt"
+	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/locvowork/employee_management_sample/apigateway/internal/service/serviceutils"
@@ -20,42 +22,9 @@ func (h *EmployeeHandler) ExportV2FromYAMLHandler(c echo.Context) error {
 	}
 	yamlConfig = string(data)
 
-	productSectionEditable := []Product{
-		{
-			Name:      "Laptop Pro",
-			Price:     1299.99,
-			Category:  "Electronics",
-			Available: true,
-			Weight:    2.5,
-			Color:     "Silver",
-		},
-		{
-			Name:      "Smartphone X",
-			Price:     899.99,
-			Category:  "Electronics",
-			Available: false,
-			Weight:    0.3,
-			Color:     "Black",
-		},
-	}
-	productSectionOriginal := []Product{
-		{
-			Name:      "Laptop Pro",
-			Price:     1299.99,
-			Category:  "Electronics",
-			Available: true,
-			Weight:    2.5,
-			Color:     "Silver",
-		},
-		{
-			Name:      "Smartphone X",
-			Price:     899.99,
-			Category:  "Electronics",
-			Available: false,
-			Weight:    0.3,
-			Color:     "Black",
-		},
-	}
+	productSectionEditable := generateRandomProducts(500)
+	productSectionOriginal := make([]Product, len(productSectionEditable))
+	copy(productSectionOriginal, productSectionEditable)
 
 	// Initialize exporter with inline config
 	exporter, err := simpleexcelv2.NewExcelDataExporterFromYamlConfig(yamlConfig)
@@ -129,4 +98,24 @@ func (h *EmployeeHandler) ExportLargeDataHandler(c echo.Context) error {
 
 	// Stream directly to response
 	return exporter.ToWriter(c.Response().Writer)
+}
+
+func generateRandomProducts(count int) []Product {
+	categories := []string{"Electronics", "Home & Garden", "Sports", "Books", "Toys"}
+	colors := []string{"Red", "Blue", "Black", "White", "Silver", "Gold"}
+
+	products := make([]Product, count)
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	for i := 0; i < count; i++ {
+		products[i] = Product{
+			Name:      fmt.Sprintf("Product %04d", i+1),
+			Price:     10.0 + r.Float64()*990.0,
+			Category:  categories[r.Intn(len(categories))],
+			Available: r.Float64() > 0.3,
+			Weight:    0.1 + r.Float64()*10.0,
+			Color:     colors[r.Intn(len(colors))],
+		}
+	}
+	return products
 }

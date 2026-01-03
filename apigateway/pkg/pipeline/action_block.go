@@ -1,70 +1,44 @@
 package pipeline
 
+import (
+	"fmt"
+	"sync"
+	"time"
+)
+
 // ActionFunc defines the function signature for actions
 type ActionFunc func(interface{}) error
 
 // ActionBlock represents a block that executes an action for each input message
-// ActionBlock is a block that executes an action for each input message
-// and forwards the result to linked blocks
-// The action function is called for each input message
-// If the action function returns an error, the error is passed to the error handler
-// and the message is not forwarded to the next block
-// If the action function returns nil, the message is forwarded to the next block
-// If the action function panics, the error is caught and passed to the error handler
-// The action function should be thread-safe
-// The action function should be non-blocking
-// The action function should be idempotent
-// The action function should be side-effect free
-// The action function should be pure
-// The action function should be deterministic
-// The action function should be fast
-// The action function should not block
-// The action function should not panic
-// The action function should not have side effects
-// The action function should not modify the input value
-// The action function should not modify any shared state
-// The action function should not call any blocking functions
-// The action function should not call any I/O functions
-// The action function should not call any network functions
-// The action function should not call any database functions
-// The action function should not call any external services
-// The action function should not call any time functions
-// The action function should not call any random number generators
-// The action function should not call any non-deterministic functions
-// The action function should not call any functions that might block
-// The action function should not call any functions that might panic
-// The action function should not call any functions that might have side effects
-// The action function should not call any functions that might modify shared state
-// The action function should not call any functions that might perform I/O.
-// The action function should not call any functions that might perform network operations.
-// The action function should not call any functions that might access a database.
-// The action function should not call any functions that might access external services.
-// The action function should not call any functions that might access the file system.
-// The action function should not call any functions that might access environment variables.
-// The action function should not call any functions that might access command line arguments.
-// The action function should not call any functions that might access the current time.
-// The action function should not call any functions that might access random numbers.
-// The action function should not call any functions that might access non-deterministic values.
+// It supports configurable retry policies and concurrency for parallel processing
 type ActionBlock struct {
 	*BaseBlock
-	input     chan interface{}
-	action    ActionFunc
-	targets   []*Target
+	input      chan interface{}
+	action     ActionFunc
+	targets    []*Target
 	targetsMux sync.RWMutex
+	stopOnce   sync.Once
+	options    BlockOptions
 }
 
-// NewActionBlock creates a new ActionBlock with the specified action function
-func NewActionBlock(action ActionFunc) *ActionBlock {
+// NewActionBlock creates a new ActionBlock with the specified action function and options
+// Default behavior: no retry, sequential processing (1 worker)
+func NewActionBlock(action ActionFunc, opts ...Option) *ActionBlock {
+	options := applyOptions(opts)
+	
 	b := &ActionBlock{
 		BaseBlock: NewBaseBlock(),
-		input:     make(chan interface{}),
+		input:     make(chan interface{}, options.BufferSize),
 		action:    action,
-		targets:    make([]*Target, 0),
+		targets:   make([]*Target, 0),
+		options:   options,
 	}
 
-	// Start the processing loop
-	b.wg.Add(1)
-	go b.process()
+	// Start multiple worker goroutines based on concurrency degree
+	b.wg.Add(options.ConcurrencyDegree)
+	for i := 0; i < options.ConcurrencyDegree; i++ {
+		go b.process()
+	}
 
 	return b
 }
@@ -96,24 +70,27 @@ func (b *ActionBlock) LinkTo(target *Target, filter func(interface{}) bool) {
 	}
 }
 
-// process handles the message processing loop
+// process handles the message processing loop for a single worker
 func (b *ActionBlock) process() {
 	defer b.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			b.Fault(fmt.Errorf("panic in ActionBlock: %v", r))
+		}
+	}()
 
 	for {
 		select {
 		case <-b.ctx.Done():
-			b.Complete()
 			return
 
 		case msg, ok := <-b.input:
 			if !ok {
-				b.Complete()
 				return
 			}
 
-			// Execute the action function
-			err := b.action(msg)
+			// Execute the action function with retry if configured
+			err := b.executeAction(msg)
 			if err != nil {
 				b.Fault(err)
 				continue
@@ -130,8 +107,8 @@ func (b *ActionBlock) process() {
 				if target.filter == nil || target.filter(msg) {
 					select {
 					case target.ch <- msg:
-					default:
-						// If target is not ready, drop the message
+					case <-b.ctx.Done():
+						return
 					}
 				}
 			}
@@ -139,12 +116,48 @@ func (b *ActionBlock) process() {
 	}
 }
 
-// Complete marks the block as completed and closes the input channel
-func (b *ActionBlock) Complete() {
-	if b.IsCompleted() {
-		return
+// executeAction executes the action function with retry logic if configured
+func (b *ActionBlock) executeAction(msg interface{}) error {
+	if b.options.RetryPolicy == nil || b.options.RetryPolicy.MaxRetries <= 1 {
+		// No retry policy or only one attempt allowed
+		return b.action(msg)
 	}
 
-	close(b.input)
-	b.BaseBlock.Complete()
+	var lastErr error
+	maxAttempts := b.options.RetryPolicy.MaxRetries
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err := b.action(msg)
+		if err == nil {
+			return nil // Success
+		}
+
+		lastErr = err
+
+		// If this was the last attempt, break
+		if attempt == maxAttempts-1 {
+			break
+		}
+
+		// Calculate backoff time
+		if b.options.RetryPolicy.Backoff > 0 {
+			backoff := time.Duration(attempt+1) * b.options.RetryPolicy.Backoff
+			select {
+			case <-time.After(backoff):
+			case <-b.ctx.Done():
+				return b.ctx.Err()
+			}
+		}
+	}
+
+	return lastErr
 }
+
+// Complete marks the block as completed and closes the input channel
+// This signals all workers to finish processing
+func (b *ActionBlock) Complete() {
+	b.stopOnce.Do(func() {
+		close(b.input)
+	})
+}
+

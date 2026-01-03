@@ -1,26 +1,38 @@
 package pipeline
 
-// BufferBlock represents a buffering block that can store messages
-// and allows them to be consumed by linked blocks
-// BufferBlock is a block that buffers messages and allows them to be consumed by linked blocks
+import (
+	"fmt"
+	"sync"
+)
+
+// BufferBlock represents a block that buffers messages for consumption by linked blocks
+// It supports configurable concurrency for parallel processing of messages
 type BufferBlock struct {
 	*BaseBlock
-	buffer     chan interface{}
+	input      chan interface{}
 	targets    []*Target
 	targetsMux sync.RWMutex
+	capacity   int
+	stopOnce   sync.Once
 }
 
-// NewBufferBlock creates a new BufferBlock with the specified buffer size
-func NewBufferBlock(bufferSize int) *BufferBlock {
+// NewBufferBlock creates a new BufferBlock with the specified options
+// Default behavior: unbuffered channel, sequential processing (1 worker)
+func NewBufferBlock(opts ...Option) *BufferBlock {
+	options := applyOptions(opts)
+	
 	b := &BufferBlock{
 		BaseBlock: NewBaseBlock(),
-		buffer:    make(chan interface{}, bufferSize),
-		targets:    make([]*Target, 0),
+		input:     make(chan interface{}, options.BufferSize),
+		targets:   make([]*Target, 0),
+		capacity:  options.BufferSize,
 	}
 
-	// Start the processing loop
-	b.wg.Add(1)
-	go b.process()
+	// Start multiple worker goroutines based on concurrency degree
+	b.wg.Add(options.ConcurrencyDegree)
+	for i := 0; i < options.ConcurrencyDegree; i++ {
+		go b.process()
+	}
 
 	return b
 }
@@ -32,7 +44,7 @@ func (b *BufferBlock) Post(message interface{}) bool {
 	}
 
 	select {
-	case b.buffer <- message:
+	case b.input <- message:
 		return true
 	default:
 		return false
@@ -52,25 +64,35 @@ func (b *BufferBlock) LinkTo(target *Target, filter func(interface{}) bool) {
 	}
 }
 
-// process handles the message processing loop
+// process handles the message processing loop for a single worker
 func (b *BufferBlock) process() {
 	defer b.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			b.Fault(fmt.Errorf("panic in BufferBlock: %v", r))
+		}
+		// Close target channels when all processing is done
+		b.targetsMux.RLock()
+		for _, t := range b.targets {
+			close(t.ch)
+		}
+		b.targetsMux.RUnlock()
+		b.SignalCompletion()
+	}()
 
 	for {
 		select {
 		case <-b.ctx.Done():
-			b.Complete()
 			return
 
-		case msg, ok := <-b.buffer:
+		case msg, ok := <-b.input:
 			if !ok {
-				b.Complete()
 				return
 			}
 
 			// Get a copy of targets to avoid holding the lock while sending
 			b.targetsMux.RLock()
-		targets := make([]*Target, len(b.targets))
+			targets := make([]*Target, len(b.targets))
 			copy(targets, b.targets)
 			b.targetsMux.RUnlock()
 
@@ -79,8 +101,8 @@ func (b *BufferBlock) process() {
 				if target.filter == nil || target.filter(msg) {
 					select {
 					case target.ch <- msg:
-					default:
-						// If target is not ready, drop the message
+					case <-b.ctx.Done():
+						return
 					}
 				}
 			}
@@ -88,31 +110,11 @@ func (b *BufferBlock) process() {
 	}
 }
 
-// Complete marks the block as completed and closes the buffer
+// Complete marks the block as completed and closes the input channel
+// This signals all workers to finish processing
 func (b *BufferBlock) Complete() {
-	if b.IsCompleted() {
-		return
-	}
-
-	close(b.buffer)
-	b.BaseBlock.Complete()
+	b.stopOnce.Do(func() {
+		close(b.input)
+	})
 }
 
-// Target represents a target block that can receive messages
-// Target represents a target that can receive messages from a source block
-type Target struct {
-	ch     chan<- interface{}
-	filter func(interface{}) bool
-}
-
-// NewTarget creates a new target with the specified channel
-func NewTarget(ch chan<- interface{}) *Target {
-	return &Target{
-		ch: ch,
-	}
-}
-
-// SetFilter sets the filter function for the target
-func (t *Target) SetFilter(filter func(interface{}) bool) {
-	t.filter = filter
-}

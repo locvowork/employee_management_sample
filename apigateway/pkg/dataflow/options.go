@@ -63,3 +63,21 @@ func WithErrorHandler(h func(error) bool) Option {
 		c.errorHandler = h
 	}
 }
+
+// ConstantBackoff returns a backoff function that always returns the same duration.
+func ConstantBackoff(d time.Duration) func(int) time.Duration {
+	return func(_ int) time.Duration {
+		return d
+	}
+}
+
+// ExponentialBackoff returns a backoff function that increases the duration exponentially.
+// backoff = initial * 2^(attempt-1)
+func ExponentialBackoff(initial time.Duration) func(int) time.Duration {
+	return func(attempt int) time.Duration {
+		if attempt <= 1 {
+			return initial
+		}
+		return initial * time.Duration(1<<(attempt-1))
+	}
+}

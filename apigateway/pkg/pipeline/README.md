@@ -1,14 +1,15 @@
 # Pipeline
 
-A TPL-Dataflow-style pipeline framework for Go 1.17.3, implemented using channels and goroutines. This package provides a way to create data processing pipelines with support for buffering, transformation, action execution, and retry policies.
+A TPL-Dataflow-style pipeline framework for Go, implemented using channels and goroutines. This package provides a way to create data processing pipelines with support for buffering, transformation, action execution, retry policies, and concurrent processing.
 
 ## Features
 
 - **BaseBlock**: Base implementation with completion and fault handling
-- **BufferBlock**: Buffers messages for consumption by linked blocks
-- **TransformBlock**: Transforms input messages using a transform function
-- **ActionBlock**: Executes an action for each input message
-- **RetryBlock**: Retries failed operations according to a retry policy
+- **BufferBlock**: Buffers messages for consumption by linked blocks with concurrent processing
+- **TransformBlock**: Transforms input messages using a transform function with retry support
+- **ActionBlock**: Executes an action for each input message with retry support
+- **Retry Policies**: Configurable retry behavior for TransformBlock and ActionBlock
+- **Concurrency**: Configurable number of concurrent workers per block
 - **Context Support**: Built-in support for context cancellation
 - **Thread-safe**: All blocks are safe for concurrent use
 - **No External Dependencies**: Pure Go implementation
@@ -31,7 +32,7 @@ import "github.com/your-org/pipeline"
 
 ```go
 // Create a buffer block with a capacity of 10 messages
-buffer := pipeline.NewBufferBlock(10)
+buffer := pipeline.NewBufferBlock(pipeline.WithBufferSize(10))
 
 // Create a transform block that converts strings to uppercase
 transform := pipeline.NewTransformBlock(func(input interface{}) (interface{}, error) {
@@ -60,7 +61,7 @@ buffer.Complete()
 pipeline.WaitAll(buffer, transform, action)
 ```
 
-### Using RetryBlock
+### Using Retry Policies
 
 ```go
 // Create a retry policy
@@ -69,31 +70,93 @@ policy := pipeline.RetryPolicy{
     Backoff:    100 * time.Millisecond,
 }
 
-// Create a retry block with the policy
-retry := pipeline.NewRetryBlock(func(input interface{}) error {
-    // Simulate a potentially failing operation
-    if rand.Float64() < 0.7 {
-        return fmt.Errorf("temporary error")
-    }
-    fmt.Println("Successfully processed:", input)
-    return nil
-}, policy)
+// Create a transform block with retry policy
+transform := pipeline.NewTransformBlock(
+    func(input interface{}) (interface{}, error) {
+        // Simulate a potentially failing operation
+        if rand.Float64() < 0.7 {
+            return nil, fmt.Errorf("temporary error")
+        }
+        return input.(string) + "-processed", nil
+    },
+    pipeline.WithRetryPolicy(policy),
+)
 
-// Link the retry block to an action block
-action := pipeline.NewActionBlock(func(input interface{}) error {
-    fmt.Println("Final result:", input)
-    return nil
-})
+// Create an action block with retry policy
+action := pipeline.NewActionBlock(
+    func(input interface{}) error {
+        // Action that might fail
+        return someOperation(input)
+    },
+    pipeline.WithRetryPolicy(policy),
+)
 
-pipeline.LinkTo(retry, action, nil)
+pipeline.LinkTo(transform, action, nil)
 
 // Post some messages
 for i := 0; i < 5; i++ {
-    retry.Post(fmt.Sprintf("message-%d", i))
+    transform.Post(fmt.Sprintf("message-%d", i))
 }
 
-retry.Complete()
-pipeline.WaitAll(retry, action)
+transform.Complete()
+pipeline.WaitAll(transform, action)
+```
+
+### Using Concurrency
+
+```go
+// Create a buffer with 10 concurrent workers
+buffer := pipeline.NewBufferBlock(
+    pipeline.WithBufferSize(100),
+    pipeline.WithConcurrencyDegree(10),
+)
+
+// Create a transform block with 5 concurrent workers
+transform := pipeline.NewTransformBlock(
+    func(input interface{}) (interface{}, error) {
+        // CPU-intensive transformation
+        return expensiveCalculation(input), nil
+    },
+    pipeline.WithConcurrencyDegree(5),
+)
+
+// Create an action block with 3 concurrent workers
+action := pipeline.NewActionBlock(
+    func(input interface{}) error {
+        // I/O-intensive action
+        return saveToDatabase(input)
+    },
+    pipeline.WithConcurrencyDegree(3),
+)
+
+pipeline.LinkTo(buffer, transform, nil)
+pipeline.LinkTo(transform, action, nil)
+
+// Post many messages for parallel processing
+for i := 0; i < 1000; i++ {
+    buffer.Post(i)
+}
+
+buffer.Complete()
+pipeline.WaitAll(buffer, transform, action)
+```
+
+### Combining Retry and Concurrency
+
+```go
+// Create a transform block with both retry policy and concurrency
+transform := pipeline.NewTransformBlock(
+    func(input interface{}) (interface{}, error) {
+        // Operation that might fail and is CPU-intensive
+        return processWithRetry(input)
+    },
+    pipeline.WithRetryPolicy(pipeline.RetryPolicy{
+        MaxRetries: 3,
+        Backoff:    50 * time.Millisecond,
+    }),
+    pipeline.WithConcurrencyDegree(8),
+    pipeline.WithBufferSize(50),
+)
 ```
 
 ## Block Types
@@ -101,6 +164,7 @@ pipeline.WaitAll(retry, action)
 ### BaseBlock
 
 The foundation for all blocks, providing:
+
 - Completion handling
 - Fault handling
 - Context support
@@ -111,24 +175,54 @@ The foundation for all blocks, providing:
 - Buffers messages for consumption by linked blocks
 - Supports backpressure by dropping messages when full
 - Can be linked to multiple targets
+- Supports concurrent processing with multiple workers
+
+**Options:**
+
+- `WithBufferSize(size int)`: Sets the buffer capacity
+- `WithConcurrencyDegree(degree int)`: Sets the number of concurrent workers
 
 ### TransformBlock
 
 - Applies a transform function to each input message
 - Forwards the transformed result to linked blocks
 - Supports filtering of output messages
+- Supports retry policies for the transform function
+- Supports concurrent processing with multiple workers
+
+**Options:**
+
+- `WithRetryPolicy(policy RetryPolicy)`: Configures retry behavior
+- `WithConcurrencyDegree(degree int)`: Sets the number of concurrent workers
+- `WithBufferSize(size int)`: Sets the buffer capacity
 
 ### ActionBlock
 
 - Executes an action for each input message
 - Forwards the input to linked blocks after successful execution
 - Supports error handling and fault propagation
+- Supports retry policies for the action function
+- Supports concurrent processing with multiple workers
 
-### RetryBlock
+**Options:**
 
-- Retries failed operations according to a retry policy
-- Supports configurable backoff between retries
-- Forwards the input to linked blocks after successful execution
+- `WithRetryPolicy(policy RetryPolicy)`: Configures retry behavior
+- `WithConcurrencyDegree(degree int)`: Sets the number of concurrent workers
+- `WithBufferSize(size int)`: Sets the buffer capacity
+
+## RetryPolicy
+
+The `RetryPolicy` struct configures retry behavior:
+
+```go
+type RetryPolicy struct {
+    MaxRetries int           // Maximum number of retry attempts (including initial)
+    Backoff    time.Duration // Initial backoff duration between retries
+}
+```
+
+- **MaxRetries**: Total attempts (initial + retries). Default is 1 (no retries)
+- **Backoff**: Initial wait time between retries. Actual backoff is `Backoff * (attempt + 1)`
 
 ## Best Practices
 
@@ -136,7 +230,28 @@ The foundation for all blocks, providing:
 2. **Resource Cleanup**: Call `Complete()` on blocks when they're no longer needed to release resources.
 3. **Backpressure**: Use appropriate buffer sizes to balance memory usage and throughput.
 4. **Context Cancellation**: Use the provided context to support graceful shutdown.
-5. **Concurrency**: All blocks are safe for concurrent use, but be mindful of shared state in your transform/action functions.
+5. **Concurrency**: Configure concurrency degree based on the nature of your workload:
+   - CPU-bound tasks: Set concurrency to number of CPU cores
+   - I/O-bound tasks: Set higher concurrency (e.g., 10-100)
+6. **Retry Policies**: Use retry policies for operations that can fail temporarily (network calls, database operations)
+7. **Thread Safety**: All blocks are safe for concurrent use, but be mindful of shared state in your transform/action functions.
+
+## Performance Considerations
+
+- **Concurrency Degree**: Tune based on workload characteristics
+
+  - CPU-intensive: `runtime.NumCPU()` or lower
+  - I/O-intensive: Higher values (10-100+)
+  - Mixed: Experiment with different values
+
+- **Buffer Sizes**: Balance memory vs. throughput
+
+  - Small buffers: Lower memory, more backpressure
+  - Large buffers: Higher memory, smoother processing
+
+- **Retry Backoff**: Consider exponential backoff for distributed systems
+  - Linear backoff: `Backoff * attempt`
+  - Exponential backoff: `Backoff * (2 ^ attempt)`
 
 ## License
 
