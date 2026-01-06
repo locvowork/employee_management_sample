@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/xuri/excelize/v2"
-	"gopkg.in/yaml.v3"
+	"gopkg.in/yaml.v2"
 )
 
 // =============================================================================

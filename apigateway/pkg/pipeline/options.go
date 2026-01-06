@@ -8,11 +8,11 @@ import (
 type BlockOptions struct {
 	// RetryPolicy defines the retry behavior for operations that can fail
 	RetryPolicy *RetryPolicy
-	
+
 	// ConcurrencyDegree specifies the number of concurrent workers processing messages
 	// Default is 1 (sequential processing)
 	ConcurrencyDegree int
-	
+
 	// BufferSize specifies the capacity of the input channel
 	// Default varies by block type
 	BufferSize int
@@ -23,7 +23,7 @@ type RetryPolicy struct {
 	// MaxRetries is the maximum number of retry attempts (including the initial attempt)
 	// Default is 1 (no retries)
 	MaxRetries int
-	
+
 	// Backoff is the initial backoff duration between retries
 	// The actual backoff time is calculated as: Backoff * (attempt + 1)
 	// Default is 0 (no backoff)
@@ -74,41 +74,6 @@ func applyOptions(opts []Option) BlockOptions {
 		opt(&options)
 	}
 	return options
-}
-
-// executeWithRetry executes a function with retry logic if a retry policy is configured
-func executeWithRetry[T any](opts BlockOptions, fn func() (T, error)) (T, error) {
-	var zero T
-	
-	if opts.RetryPolicy == nil || opts.RetryPolicy.MaxRetries <= 1 {
-		// No retry policy or only one attempt allowed
-		return fn()
-	}
-	
-	var lastErr error
-	maxAttempts := opts.RetryPolicy.MaxRetries
-	
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		result, err := fn()
-		if err == nil {
-			return result, nil // Success
-		}
-		
-		lastErr = err
-		
-		// If this was the last attempt, break
-		if attempt == maxAttempts-1 {
-			break
-		}
-		
-		// Calculate backoff time
-		if opts.RetryPolicy.Backoff > 0 {
-			backoff := time.Duration(attempt+1) * opts.RetryPolicy.Backoff
-			time.Sleep(backoff)
-		}
-	}
-	
-	return zero, lastErr
 }
 
 // Target represents a target that can receive messages from a source block

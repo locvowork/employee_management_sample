@@ -13,11 +13,13 @@ import (
 	"github.com/locvowork/employee_management_sample/apigateway/internal/logger"
 	"github.com/locvowork/employee_management_sample/apigateway/internal/repository"
 	"github.com/locvowork/employee_management_sample/apigateway/internal/service"
+	"github.com/locvowork/employee_management_sample/apigateway/pkg/googlecloud"
 )
 
 type App struct {
 	Echo *echo.Echo
 	DB   *sql.DB
+	GCP  *googlecloud.Client
 	// `type envConfig struct` -> unexported.
 	// I should probably export it if I want to put it in the struct, or just use `interface{}` or ignore it in the struct.
 	// For now, I'll skip storing config in App struct if not strictly needed, or just use the global.
@@ -64,11 +66,20 @@ func (a *App) Initialize(ctx context.Context) error {
 	empHandler := handler.NewEmployeeHandler(empSvc)
 	compHandler := handler.NewComparisonHandler()
 
+	// Initialize GCP Datastore Client
+	gcpClient, err := googlecloud.NewClient(ctx, config.DefaultEnvConfig.GCP_PROJECT_ID)
+	if err != nil {
+		logger.ErrorLog(ctx, fmt.Sprintf("failed to initialize GCP client: %v", err))
+		// We might not want to fail the whole app if GCP is optional, but for now let's be strict if configured.
+	}
+	a.GCP = gcpClient
+	gcpHandler := handler.NewGCPDemoHandler(gcpClient)
+
 	// Register Middlewares
 	a.RegisterMiddlewares()
 
 	// Register Routes
-	a.RegisterRoutes(empHandler, compHandler)
+	a.RegisterRoutes(empHandler, compHandler, gcpHandler)
 
 	return nil
 }
@@ -79,7 +90,7 @@ func (a *App) RegisterMiddlewares() {
 	a.Echo.Use(middleware.CORS())
 }
 
-func (a *App) RegisterRoutes(empHandler *handler.EmployeeHandler, compHandler *handler.ComparisonHandler) {
+func (a *App) RegisterRoutes(empHandler *handler.EmployeeHandler, compHandler *handler.ComparisonHandler, gcpHandler *handler.GCPDemoHandler) {
 	a.Echo.POST("/employees", empHandler.CreateHandler)
 	a.Echo.GET("/employees/:id", empHandler.GetHandler)
 	a.Echo.PUT("/employees/:id", empHandler.UpdateHandler)
@@ -102,9 +113,20 @@ func (a *App) RegisterRoutes(empHandler *handler.EmployeeHandler, compHandler *h
 	compGroup.GET("/wiki/stream", compHandler.ExportWikiStreaming)
 	compGroup.GET("/wiki/streaming-v2", compHandler.ExportWikiStreamingV2)
 	compGroup.GET("/wiki/streaming-multi-section", compHandler.ExportMultiSectionStreamYAML)
+
+	if gcpHandler != nil {
+		gcpGroup := a.Echo.Group("/api/v1/gcp")
+		gcpGroup.POST("/task-lists", gcpHandler.CreateTaskListHandler)
+		gcpGroup.POST("/task-lists/:id/tasks", gcpHandler.CreateTaskHandler)
+		gcpGroup.GET("/task-lists/:id/tasks", gcpHandler.ListTasksHandler)
+		gcpGroup.GET("/tasks/complex", gcpHandler.ComplexQueryHandler)
+	}
 }
 
 func (a *App) Run() error {
 	defer a.DB.Close()
+	if a.GCP != nil {
+		defer a.GCP.Close()
+	}
 	return a.Echo.Start(":" + config.DefaultEnvConfig.APP_PORT)
 }

@@ -25,6 +25,8 @@ type envConfig struct {
 	LOG_FILE_PATH string
 	// app config
 	APP_PORT string
+	// gcp config
+	GCP_PROJECT_ID string
 }
 
 func LoadEnvConfig() error {
@@ -43,6 +45,7 @@ func LoadEnvConfig() error {
 		DB_MAX_OPEN_CONNS:    getEnvInt("DB_MAX_OPEN_CONNS", 100),
 		LOG_FILE_PATH:        getEnvString("LOG_FILE_PATH", ""),
 		APP_PORT:             getEnvString("APP_PORT", "8080"),
+		GCP_PROJECT_ID:       getEnvString("GCP_PROJECT_ID", "demo-project"),
 	}
 	return nil
 }
