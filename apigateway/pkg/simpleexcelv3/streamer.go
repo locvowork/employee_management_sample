@@ -1,4 +1,4 @@
-package simpleexcelv2
+package simpleexcelv3
 
 import (
 	"fmt"
@@ -8,9 +8,9 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// Streamer manages a streaming export session.
-type Streamer struct {
-	exporter *ExcelDataExporter
+// StreamerV3 manages a streaming export session.
+type StreamerV3 struct {
+	exporter *ExcelDataExporterV3
 	file     *excelize.File
 	writer   io.Writer
 	// streamWriters holds active stream writers for each sheet
@@ -28,7 +28,7 @@ type Streamer struct {
 // Write appends a batch of data to the specified section.
 // The sectionID must match the ID of the current section or a future section.
 // Strict ordering is enforced: you must write to sections in the order they are defined.
-func (s *Streamer) Write(sectionID string, data interface{}) error {
+func (s *StreamerV3) Write(sectionID string, data interface{}) error {
 	// 1. Validation
 	if s.file == nil {
 		return fmt.Errorf("stream is closed or not initialized")
@@ -97,8 +97,8 @@ func (s *Streamer) Write(sectionID string, data interface{}) error {
 		// Render Title
 		if sec.Title != nil {
 			cell, _ := excelize.CoordinatesToCellName(1, s.currentRow)
-			defaultTitleOnly := &StyleTemplate{
-				Font:      &FontTemplate{Bold: true},
+			defaultTitleOnly := &StyleTemplateV3{
+				Font:      &FontTemplateV3{Bold: true},
 				Alignment: &AlignmentTemplate{Horizontal: "center", Vertical: "top"},
 			}
 			styleTmpl := resolveStyle(sec.TitleStyle, defaultTitleOnly, sec.Locked)
@@ -132,8 +132,8 @@ func (s *Streamer) Write(sectionID string, data interface{}) error {
 			cell, _ := excelize.CoordinatesToCellName(1, s.currentRow)
 			headers := make([]interface{}, len(sec.Columns))
 			for i, col := range sec.Columns {
-				defaultHeader := &StyleTemplate{
-					Font:      &FontTemplate{Bold: true},
+				defaultHeader := &StyleTemplateV3{
+					Font:      &FontTemplateV3{Bold: true},
 					Alignment: &AlignmentTemplate{Horizontal: "center", Vertical: "top"},
 				}
 				styleTmpl := resolveStyle(sec.HeaderStyle, defaultHeader, col.IsLocked(sec.Locked))
@@ -162,7 +162,7 @@ func (s *Streamer) Write(sectionID string, data interface{}) error {
 		s.exporter.sectionMetadata[sec.ID] = SectionPlacement{
 			SectionID:    sec.ID,
 			StartRow:     s.currentRow, // Current stream row is the data start row
-			StartCol:     1,            // Streamer always starts at col 1 for now
+			StartCol:     1,            // StreamerV3 always starts at col 1 for now
 			FieldOffsets: fieldOffsets,
 			DataLen:      0, // Unknown/Irrelevant for streaming lookup
 		}
@@ -176,7 +176,7 @@ func (s *Streamer) Write(sectionID string, data interface{}) error {
 // ... (comments kept as is or removed for brevity) ...
 
 // Close finishes the stream and writes the file to the output.
-func (s *Streamer) Close() error {
+func (s *StreamerV3) Close() error {
 	// Finish current sheet
 	if err := s.finishCurrentSheet(); err != nil {
 		return err
@@ -198,7 +198,7 @@ func (s *Streamer) Close() error {
 }
 
 // finishCurrentSheet finishes processing the current sheet (render remaining static sections)
-func (s *Streamer) finishCurrentSheet() error {
+func (s *StreamerV3) finishCurrentSheet() error {
 	// Process remaining sections in current sheet
 	sheet := s.getCurrentSheet()
 	if sheet == nil {
@@ -217,7 +217,7 @@ func (s *Streamer) finishCurrentSheet() error {
 	return nil
 }
 
-func (s *Streamer) getCurrentSheet() *SheetBuilder {
+func (s *StreamerV3) getCurrentSheet() *SheetBuilderV3 {
 	if s.currentSheetIndex >= len(s.exporter.sheets) {
 		return nil
 	}
@@ -226,7 +226,7 @@ func (s *Streamer) getCurrentSheet() *SheetBuilder {
 
 // advanceToNextStreamingSection renders all static sections until it hits a section
 // that expects streaming data.
-func (s *Streamer) advanceToNextStreamingSection() error {
+func (s *StreamerV3) advanceToNextStreamingSection() error {
 	sheet := s.getCurrentSheet()
 	if sheet == nil {
 		return nil
@@ -273,12 +273,12 @@ func (s *Streamer) advanceToNextStreamingSection() error {
 	return nil
 }
 
-func (s *Streamer) renderStaticSection(sw *excelize.StreamWriter, sec *SectionConfig) error {
+func (s *StreamerV3) renderStaticSection(sw *excelize.StreamWriter, sec *SectionConfigV3) error {
 	// 1. Title
 	if sec.Title != nil {
 		cell, _ := excelize.CoordinatesToCellName(1, s.currentRow)
-		defaultTitleOnly := &StyleTemplate{
-			Font:      &FontTemplate{Bold: true},
+		defaultTitleOnly := &StyleTemplateV3{
+			Font:      &FontTemplateV3{Bold: true},
 			Alignment: &AlignmentTemplate{Horizontal: "center", Vertical: "top"},
 		}
 		styleTmpl := resolveStyle(sec.TitleStyle, defaultTitleOnly, sec.Locked)
@@ -314,8 +314,8 @@ func (s *Streamer) renderStaticSection(sw *excelize.StreamWriter, sec *SectionCo
 
 		headers := make([]interface{}, len(sec.Columns))
 		for i, col := range sec.Columns {
-			defaultHeader := &StyleTemplate{
-				Font:      &FontTemplate{Bold: true},
+			defaultHeader := &StyleTemplateV3{
+				Font:      &FontTemplateV3{Bold: true},
 				Alignment: &AlignmentTemplate{Horizontal: "center", Vertical: "top"},
 			}
 			styleTmpl := resolveStyle(sec.HeaderStyle, defaultHeader, col.IsLocked(sec.Locked))
@@ -356,7 +356,7 @@ func (s *Streamer) renderStaticSection(sw *excelize.StreamWriter, sec *SectionCo
 	return nil
 }
 
-func (s *Streamer) writeBatch(sw *excelize.StreamWriter, sec *SectionConfig, data interface{}) error {
+func (s *StreamerV3) writeBatch(sw *excelize.StreamWriter, sec *SectionConfigV3, data interface{}) error {
 	// Resolve Columns
 	if len(sec.Columns) == 0 {
 		sec.Columns = mergeColumns(data, sec.Columns)
@@ -374,9 +374,9 @@ func (s *Streamer) writeBatch(sw *excelize.StreamWriter, sec *SectionConfig, dat
 	colStyles := make([]int, len(sec.Columns))
 	for j, col := range sec.Columns {
 		locked := col.IsLocked(sec.Locked)
-		var defaultDataStyle *StyleTemplate
-		if sec.Type == SectionTypeHidden {
-			defaultDataStyle = &StyleTemplate{Fill: &FillTemplate{Color: "FFFF00"}}
+		var defaultDataStyle *StyleTemplateV3
+		if sec.Type == SectionTypeV3Hidden {
+			defaultDataStyle = &StyleTemplateV3{Fill: &FillTemplate{Color: "FFFF00"}}
 		}
 		styleTmpl := resolveStyle(sec.DataStyle, defaultDataStyle, locked)
 		sid, err := s.exporter.createStyle(s.file, styleTmpl)

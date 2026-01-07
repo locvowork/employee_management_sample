@@ -12,7 +12,6 @@ import (
 	"github.com/locvowork/employee_management_sample/apigateway/pkg/dataflow"
 	"github.com/locvowork/employee_management_sample/apigateway/pkg/pipeline"
 	"github.com/locvowork/employee_management_sample/apigateway/pkg/simpleexcelv2"
-	"github.com/locvowork/employee_management_sample/apigateway/pkg/simpleexcelv3"
 )
 
 type WikiPerson struct {
@@ -192,19 +191,29 @@ func (h *ComparisonHandler) ExportWikiStreaming(c echo.Context) error {
 	c.Response().Header().Set(echo.HeaderContentDisposition, "attachment; filename=wiki_names_streaming.xlsx")
 	c.Response().Header().Set(echo.HeaderContentType, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-	exporter := simpleexcelv3.NewStreamExporter(c.Response().Writer)
-	sheet, err := exporter.AddSheet("Wikipedia People")
+	// FIXED: Use correct exporter creation
+	exporter := simpleexcelv2.NewExcelDataExporter()
+	
+	// FIXED: Use AddSheet method
+	sheet := exporter.AddSheet("Wikipedia People")
+	
+	// FIXED: Create streamer for writing data
+	streamer, err := exporter.StartStream(c.Response().Writer)
 	if err != nil {
 		return err
 	}
+	defer streamer.Close()
 
-	cols := []simpleexcelv3.ColumnConfig{
-		{FieldName: "Name", Header: "Person Name", Width: 40},
-		{FieldName: "URL", Header: "Wiki URL", Width: 60},
-	}
-	if err := sheet.WriteHeader(cols); err != nil {
-		return err
-	}
+	// FIXED: Configure section for streaming
+	sheet.AddSection(&simpleexcelv2.SectionConfig{
+		ID:         "wiki-data",
+		Title:      "Wikipedia People Export (Streaming)",
+		ShowHeader: true,
+		Columns: []simpleexcelv2.ColumnConfig{
+			{FieldName: "Name", Header: "Person Name", Width: 40},
+			{FieldName: "URL", Header: "Wiki URL", Width: 60},
+		},
+	})
 
 	// 2. Dataflow Pipeline
 	src := dataflow.From(ctx, wikiURLs...)
@@ -217,23 +226,19 @@ func (h *ComparisonHandler) ExportWikiStreaming(c echo.Context) error {
 		return parseWikiNames(msg.(string)), nil
 	})
 
-	// 3. ForEach + AppendBatch (appending each parsed slice immediately)
+	// 3. ForEach + Write Batch
 	var count int
 	err = dataflow.ForEach(ctx, parsed, func(msg interface{}) error {
 		people := msg.([]WikiPerson)
 		count += len(people)
 		logger.InfoLog(ctx, "Appending batch of %d people to Excel", len(people))
-		return sheet.WriteBatch(people)
+		
+		// FIXED: Use streamer.Write instead of sheet.WriteBatch
+		return streamer.Write("wiki-data", people)
 	})
 
 	if err != nil {
 		logger.ErrorLog(ctx, "Streaming Pipeline failed: %v", err)
-		// Note: At this point headers might already be sent, so we can't easily return JSON error
-		return nil
-	}
-
-	if err := exporter.Close(); err != nil {
-		logger.ErrorLog(ctx, "Failed to close exporter: %v", err)
 		return nil
 	}
 
@@ -292,6 +297,7 @@ func (h *ComparisonHandler) ExportWikiStreamingV2(c echo.Context) error {
 			},
 		})
 
+	// FIXED: Use correct StartStream method
 	streamer, err := exporter.StartStream(c.Response().Writer)
 	if err != nil {
 		logger.ErrorLog(ctx, "Failed to start stream: %v", err)
@@ -316,12 +322,14 @@ func (h *ComparisonHandler) ExportWikiStreamingV2(c echo.Context) error {
 		people := msg.([]WikiPerson)
 		count += len(people)
 		logger.InfoLog(ctx, "Appending batch of %d people to Excel (V2)", len(people))
+		
+		// FIXED: Use correct Write method with section ID
 		return streamer.Write("wiki-data", people)
 	})
 
 	if err != nil {
 		logger.ErrorLog(ctx, "Streaming V2 Pipeline failed: %v", err)
-		return nil // Response already started
+		return nil
 	}
 
 	logger.InfoLog(ctx, "Streaming V2 Pipeline finished in %v, exported %d people", time.Since(start), count)
@@ -392,6 +400,7 @@ sheets:
 	c.Response().Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Response().Header().Set("Content-Disposition", "attachment; filename=multi_section_stream.xlsx")
 
+	// FIXED: Use correct StartStream method
 	streamer, err := exporter.StartStream(c.Response())
 	if err != nil {
 		logger.ErrorLog(ctx, "Failed to start stream: %v", err)

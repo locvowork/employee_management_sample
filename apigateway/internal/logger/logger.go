@@ -2,6 +2,7 @@ package logger
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -59,6 +60,7 @@ func getLogger(ctx context.Context) *zerolog.Logger {
 
 // DebugLog logs a debug level message.
 func DebugLog(ctx context.Context, msg string, args ...interface{}) {
+	fmt.Printf(msg+"\n", args)
 	getLogger(ctx).Debug().Msgf(msg, args...)
 }
 

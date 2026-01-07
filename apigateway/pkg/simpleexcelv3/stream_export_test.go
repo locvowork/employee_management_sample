@@ -1,4 +1,4 @@
-package simpleexcelv2
+package simpleexcelv3
 
 import (
 	"bytes"
@@ -9,22 +9,22 @@ import (
 
 func TestBatchWriting(t *testing.T) {
 	// 1. Setup Exporter
-	exporter := NewExcelDataExporter()
+	exporter := NewExcelDataExporterV3V3()
 	sheet := exporter.AddSheet("StreamOps")
 
 	// Title Section (Static)
-	sheet.AddSection(&SectionConfig{
-		Type:  SectionTypeTitleOnly,
+	sheet.AddSection(&SectionConfigV3{
+		Type:  SectionTypeV3TitleOnly,
 		Title: "Batch Export Test",
 	})
 
 	// Data Section (Streaming)
 	// We don't provide Data here, we will stream it.
 	// ID is required to target the section during streaming.
-	sheet.AddSection(&SectionConfig{
+	sheet.AddSection(&SectionConfigV3{
 		ID:         "stream-data",
 		ShowHeader: true,
-		Columns: []ColumnConfig{
+		Columns: []ColumnConfigV3{
 			{FieldName: "ID", Header: "ID", Width: 10},
 			{FieldName: "Value", Header: "Value", Width: 30},
 		},
@@ -32,9 +32,9 @@ func TestBatchWriting(t *testing.T) {
 
 	// 2. Start Stream
 	buf := new(bytes.Buffer)
-	streamer, err := exporter.StartStream(buf)
+	streamer, err := exporter.StartStreamV3(buf)
 	if err != nil {
-		t.Fatalf("StartStream failed: %v", err)
+		t.Fatalf("StartStreamV3 failed: %v", err)
 	}
 
 	// 3. Write Batch 1
@@ -132,15 +132,15 @@ sheets:
 `
 	// Note: using simple field_name for comparison to test rendering, not formulas here yet.
 
-	exporter, err := NewExcelDataExporterFromYamlConfig(yamlConfig)
+	exporter, err := NewExcelDataExporterV3V3FromYamlConfig(yamlConfig)
 	if err != nil {
-		t.Fatalf("NewExcelDataExporterFromYamlConfig failed: %v", err)
+		t.Fatalf("NewExcelDataExporterV3V3FromYamlConfig failed: %v", err)
 	}
 
 	var buf bytes.Buffer
-	streamer, err := exporter.StartStream(&buf)
+	streamer, err := exporter.StartStreamV3(&buf)
 	if err != nil {
-		t.Fatalf("StartStream failed: %v", err)
+		t.Fatalf("StartStreamV3 failed: %v", err)
 	}
 
 	// Batch 1 -> Editable

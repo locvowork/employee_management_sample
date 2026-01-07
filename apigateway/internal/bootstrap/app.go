@@ -106,6 +106,7 @@ func (a *App) RegisterRoutes(empHandler *handler.EmployeeHandler, compHandler *h
 	exportGroupV2.GET("/fluent", empHandler.ExportFluentConfigHandler)
 	exportGroupV2.GET("/yaml", empHandler.ExportV2FromYAMLHandler)
 	exportGroupV2.GET("/largedata", empHandler.ExportLargeDataHandler)
+	exportGroupV2.GET("/perf", empHandler.ExportLargeColumnHandler)
 
 	compGroup := a.Echo.Group("/comparison")
 	compGroup.GET("/wiki/tpl", compHandler.ExportWikiTPL)
