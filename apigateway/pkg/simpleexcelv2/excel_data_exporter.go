@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -792,21 +793,123 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 				}
 			}
 
-			// Pre-calculate column names to avoid repeated calls in row loop (though SetSheetRow handles finding cells)
-			// Actually SetSheetRow takes "A1", we just need the start cell for each row.
+			// OPTIMIZATION (Phase 2): Hoist Reflection
+			type accessor func(v reflect.Value) interface{}
+			accessors := make([]accessor, len(sec.Columns))
+
+			if dataVal.Kind() == reflect.Slice && dataVal.Len() > 0 {
+				elem := dataVal.Index(0)
+				if elem.Kind() == reflect.Ptr {
+					elem = elem.Elem()
+				}
+
+				for j, col := range sec.Columns {
+					if col.CompareWith != nil {
+						accessors[j] = func(v reflect.Value) interface{} { return nil }
+						continue
+					}
+
+					if elem.Kind() == reflect.Struct {
+						t := elem.Type()
+						f, found := t.FieldByName(col.FieldName)
+						if found {
+							idx := f.Index
+							accessors[j] = func(v reflect.Value) interface{} {
+								if v.Kind() == reflect.Ptr {
+									v = v.Elem()
+								}
+								return v.FieldByIndex(idx).Interface()
+							}
+						} else {
+							accessors[j] = func(v reflect.Value) interface{} { return "" }
+						}
+					} else if elem.Kind() == reflect.Map {
+						keyVal := reflect.ValueOf(col.FieldName)
+						accessors[j] = func(v reflect.Value) interface{} {
+							if v.Kind() == reflect.Ptr {
+								v = v.Elem()
+							}
+							val := v.MapIndex(keyVal)
+							if val.IsValid() {
+								return val.Interface()
+							}
+							return ""
+						}
+					} else {
+						fieldName := col.FieldName
+						accessors[j] = func(v reflect.Value) interface{} {
+							return e.extractValue(v, fieldName)
+						}
+					}
+				}
+			} else {
+				for j, col := range sec.Columns {
+					fieldName := col.FieldName
+					accessors[j] = func(v reflect.Value) interface{} {
+						return e.extractValue(v, fieldName)
+					}
+				}
+			}
+
+			// Pre-calculate column names
+			sColName, _ := excelize.ColumnNumberToName(sCol)
+
+			// Buffer Reuse
+			rowValues := make([]interface{}, len(sec.Columns))
+
+			// Pre-calculate comparison resolvers to avoid repeated map lookups in loop
+			type comparisonMeta struct {
+				colIdx int
+
+				// CompareWith
+				cwColName  string
+				cwStartRow int
+
+				// CompareAgainst
+				caColName  string
+				caStartRow int
+			}
+			var compMetas []comparisonMeta
+
+			for j, col := range sec.Columns {
+				if col.CompareWith != nil {
+					cm := comparisonMeta{colIdx: j}
+
+					// Resolve CompareWith
+					if p, ok := e.sectionMetadata[col.CompareWith.SectionID]; ok {
+						if off, ok := p.FieldOffsets[col.CompareWith.FieldName]; ok {
+							cm.cwColName, _ = excelize.ColumnNumberToName(p.StartCol + off)
+							cm.cwStartRow = p.StartRow
+						}
+					}
+
+					// Resolve CompareAgainst
+					if col.CompareAgainst != nil {
+						if p, ok := e.sectionMetadata[col.CompareAgainst.SectionID]; ok {
+							if off, ok := p.FieldOffsets[col.CompareAgainst.FieldName]; ok {
+								cm.caColName, _ = excelize.ColumnNumberToName(p.StartCol + off)
+								cm.caStartRow = p.StartRow
+							}
+						}
+					}
+					compMetas = append(compMetas, cm)
+				}
+			}
+
+			// Pre-calculate column names (already done: sColName)
+			secColNames := make([]string, len(sec.Columns))
+			for j := range sec.Columns {
+				secColNames[j] = e.getColName(sCol + j)
+			}
 
 			for i := 0; i < dataLen; i++ {
 				var item reflect.Value
-				if dataVal.Kind() == reflect.Slice && i < dataVal.Len() {
+				if dataVal.Kind() == reflect.Slice {
+					// Avoid bounds check by trusting dataLen logic
 					item = dataVal.Index(i)
 				}
 
-				// Build row values for batch write
-				rowValues := make([]interface{}, len(sec.Columns))
-
-				// Keep track of formula indices to apply later (SetSheetRow doesn't support formulas as raw strings easily)
-				// or we just write them as strings and SetSheetRow treats them as string? No, needs SetCellFormula.
-				// So we leave nil in rowValues and call SetCellFormula separately.
+				// Track formulas
 				type docFormula struct {
 					ColIdx  int
 					Formula string
@@ -815,15 +918,32 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 
 				for j, col := range sec.Columns {
 					if col.CompareWith != nil {
-						// Formula
-						formula, err := e.generateDiffFormula(col, i)
-						if err == nil {
-							rowFormulas = append(rowFormulas, docFormula{j, formula})
+						// Optimized Formula Generation
+						var meta *comparisonMeta
+						for k := range compMetas {
+							if compMetas[k].colIdx == j {
+								meta = &compMetas[k]
+								break
+							}
+						}
+
+						if meta != nil && meta.cwColName != "" {
+							// Generate formula string using strconv
+							cellA := meta.cwColName + strconv.Itoa(meta.cwStartRow+i)
+							if meta.caColName != "" {
+								cellB := meta.caColName + strconv.Itoa(meta.caStartRow+i)
+								formula := fmt.Sprintf(`IF(%s<>%s, "Diff", "")`, cellA, cellB)
+
+								rowFormulas = append(rowFormulas, docFormula{j, formula})
+								rowValues[j] = nil
+							} else {
+								rowValues[j] = nil
+							}
 						} else {
-							rowValues[j] = fmt.Sprintf("Error: %v", err)
+							rowValues[j] = "Ref Error"
 						}
 					} else if item.IsValid() {
-						val := e.extractValue(item, col.FieldName)
+						val := accessors[j](item)
 						if col.Formatter != nil {
 							val = col.Formatter(val)
 						} else if col.FormatterName != "" {
@@ -832,16 +952,28 @@ func (e *ExcelDataExporter) renderSections(f *excelize.File, sheet string, secti
 							}
 						}
 						rowValues[j] = val
+					} else {
+						rowValues[j] = nil
 					}
 				}
 
 				// Write ROW
-				startCell := e.getCellAddress(sCol, currentRow)
-				f.SetSheetRow(sheet, startCell, &rowValues)
+				// Optimization: Skip SetSheetRow if all values are nil (common in formula-only sections)
+				hasData := false
+				for _, v := range rowValues {
+					if v != nil {
+						hasData = true
+						break
+					}
+				}
+				if hasData {
+					startCell := sColName + strconv.Itoa(currentRow)
+					f.SetSheetRow(sheet, startCell, rowValues)
+				}
 
-				// Apply Formulas
+				// Apply Formulas (Secondary Pass)
 				for _, form := range rowFormulas {
-					cell := e.getCellAddress(sCol+form.ColIdx, currentRow)
+					cell := secColNames[form.ColIdx] + strconv.Itoa(currentRow)
 					f.SetCellFormula(sheet, cell, form.Formula)
 				}
 
